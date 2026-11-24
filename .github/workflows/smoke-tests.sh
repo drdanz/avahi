@@ -71,6 +71,50 @@ run() {
     fi
 }
 
+run_static_test() {
+    local module="$1" libdir tmpdir libs
+
+    libdir=$(sed -n 's/^libdir=//p' "$module.pc")
+    if [[ ! -f "$libdir/lib$module.a" ]]; then
+        echo "static libraries are not installed, skipping the static $module test"
+        return
+    fi
+
+    tmpdir=$(mktemp -d)
+    cat >"$tmpdir/static-test.c"
+
+    libs=$(PKG_CONFIG_PATH="$libdir/pkgconfig" pkg-config --static --libs "$module" | sed -E "s#-l(avahi-[a-z]+)#$libdir/lib\\1.a#g")
+    # shellcheck disable=SC2046,SC2086
+    ${CC:-cc} ${CFLAGS:-} -o "$tmpdir/static-test" "$tmpdir/static-test.c" \
+        $(PKG_CONFIG_PATH="$libdir/pkgconfig" pkg-config --cflags "$module") $libs
+    run "$tmpdir/static-test"
+    rm -rf "$tmpdir"
+}
+
+run_static_client_test() {
+    run_static_test avahi-client <<'EOL'
+#include <stddef.h>
+#include <avahi-client/client.h>
+#include <avahi-common/simple-watch.h>
+
+int main(void) {
+    AvahiSimplePoll *poll;
+    AvahiClient *client;
+    int error;
+
+    if (!(poll = avahi_simple_poll_new()))
+        return 1;
+
+    client = avahi_client_new(avahi_simple_poll_get(poll), 0, NULL, NULL, &error);
+    if (client)
+        avahi_client_free(client);
+
+    avahi_simple_poll_free(poll);
+    return !client;
+}
+EOL
+}
+
 should_fail() {
     if "$@"; then
         dump_journal
@@ -277,6 +321,7 @@ fi
 
 if [[ "$WITH_DBUS" == true ]]; then
     run ./avahi-client/client-test
+    run_static_client_test
 
     if [[ ! "$OS" =~ (alpine|omnios|openbsd) ]]; then
         run ./avahi-compat-howl/address-test
